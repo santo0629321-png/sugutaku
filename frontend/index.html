@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>すぐタク PoC デモ｜タクシー車載ナビ画面</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif; }
+
+  /* ==== 通知パネルが右からスッと出てくるアニメーション ==== */
+  @keyframes slideInRight {
+    0%   { opacity: 0; transform: translateX(28px); }
+    100% { opacity: 1; transform: translateX(0); }
+  }
+  .anim-slide-in { animation: slideInRight .45s cubic-bezier(.2,.8,.2,1) both; }
+
+  @keyframes pulseDot {
+    0%, 100% { opacity: .3; }
+    50% { opacity: 1; }
+  }
+  .pulse-dot { animation: pulseDot 1.3s ease-in-out infinite; }
+
+  /* ==== ナビのルート線が流れるアニメーション ==== */
+  .route-line {
+    stroke-dasharray: 10 8;
+    animation: dashFlow 1s linear infinite;
+  }
+  @keyframes dashFlow { to { stroke-dashoffset: -36; } }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+</style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+<!-- ============ ヘッダー ============ -->
+<header class="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-slate-200 shadow-sm">
+  <div class="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-2">
+      <span class="text-2xl">🚕</span>
+      <div>
+        <p class="font-extrabold text-slate-800 leading-tight">すぐタク PoC デモ</p>
+        <p class="text-[11px] text-slate-400 leading-tight">タクシー運転手向け 車載ナビ端末（横画面・複数リクエスト対応）</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <span id="phase-badge" class="text-xs font-bold px-3 py-1.5 rounded-full whitespace-nowrap"></span>
+      <button onclick="resetDemo()"
+        class="text-xs md:text-sm font-bold px-3 py-2 rounded-lg bg-slate-700 text-white hover:bg-slate-800 transition">
+        🔄 デモをリセット
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ============ デモ操作パネル（薬局の物理ボタンの代わり） ============ -->
+<div class="max-w-6xl mx-auto px-4 pt-6">
+  <div class="flex flex-wrap items-center justify-center gap-3 bg-white border-2 border-dashed border-slate-300 rounded-2xl px-5 py-3">
+    <span class="text-slate-400 text-xs md:text-sm font-bold">
+      🎬 プレゼン用の操作パネル（実際は薬局窓口に置かれた「物理ボタン」を高齢者が押すことで発生します。薬局はランダムに選ばれ、同じ薬局から連続で発生することもあります）
+    </span>
+    <button id="trigger-request-btn" onclick="createRequest()"
+      class="px-5 py-2.5 rounded-full bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 disabled:cursor-not-allowed
+             text-white font-black text-sm shadow transition-all">
+      📨 新しい事前配車リクエストを発生させる
+    </button>
+  </div>
+</div>
+
+<!-- ============ メイン：車載ナビ端末（横画面・地図デフォルト） ============ -->
+<main class="max-w-6xl mx-auto px-4 py-8 flex flex-col items-center">
+
+  <div class="relative w-full max-w-[880px] aspect-[16/10] rounded-2xl border-[10px] border-slate-900 bg-slate-900 shadow-2xl overflow-hidden">
+    <div id="taxi-map" class="absolute inset-0"></div>
+    <div id="taxi-overlay" class="absolute top-3 right-3 bottom-3 w-[280px] sm:w-[300px] overflow-y-auto flex flex-col gap-3"></div>
+    <div id="taxi-location-pill" class="absolute top-4 left-4"></div>
+    <div class="absolute bottom-2 left-4 text-white/50 text-[10px] font-mono tracking-widest">SUGUTAKU DRIVER NAVI</div>
+  </div>
+
+  <!-- 車のダッシュボード風マウントアーム（横画面端末を運転席ホルダーに固定しているイメージ） -->
+  <div class="w-24 h-6 bg-slate-700 -mt-1 rounded-b-xl"></div>
+  <div class="w-40 h-3 bg-slate-800 rounded-full mt-1"></div>
+  <p class="mt-3 text-slate-400 text-xs font-bold">📱 運転席ホルダーに固定された車載端末（横画面）</p>
+</main>
+
+<!-- ============ 解説チップス（プレゼン用の小さな注記／クリックで開閉） ============ -->
+<div class="fixed bottom-4 left-4 z-40">
+  <div id="tip-privacy-panel" class="hidden mb-2 w-64 bg-slate-900/95 text-white text-xs leading-relaxed rounded-xl shadow-xl p-3">
+    <p class="font-bold text-amber-300 mb-1">🔒 個人情報保護のしくみ</p>
+    <p>患者の番地・建物名はレセコン端末内で破棄され、サーバーには「町名まで」の匿名化エリア情報だけが送信されます。ドライバーの地図に表示されるのもエリア表示のみで、個人宅は一切特定できません。</p>
+  </div>
+  <button onclick="toggleTip('privacy')" title="個人情報保護のしくみ"
+    class="w-11 h-11 rounded-full bg-slate-900 text-white text-lg shadow-xl flex items-center justify-center hover:bg-slate-700 transition">🔒</button>
+</div>
+
+<div class="fixed bottom-4 right-4 z-40 flex flex-col items-end">
+  <div id="tip-timing-panel" class="hidden mb-2 w-64 bg-slate-900/95 text-white text-xs leading-relaxed rounded-xl shadow-xl p-3">
+    <p class="font-bold text-sky-300 mb-1">⏱ なぜ「10分前ロック」？</p>
+    <p>タクシーが早着すると現場では約3分で待機メーターが回り始めてしまいます。あえて出発10分前まで確定を待つことで、運転手の自由な流し営業と「行き損ゼロ」を両立しています。</p>
+  </div>
+  <button onclick="toggleTip('timing')" title="なぜ10分前ロック？"
+    class="w-11 h-11 rounded-full bg-slate-900 text-white text-lg shadow-xl flex items-center justify-center hover:bg-slate-700 transition">⏱</button>
+</div>
+
+<script>
+/* ===================================================================
+ * すぐタク PoC デモ ロジック（タクシー運転手向け車載ナビ画面）
+ * - 薬局の物理ボタン操作は「デモ操作パネル」のボタンで代用する。
+ * - 複数の薬局からの同時リクエスト、同じ薬局からの2件目のリクエストにも対応。
+ *   各リクエストには識別カラー（案件ごとの色）を割り当て、通知カード・地図ピンの
+ *   両方に反映することで、どの通知がどの案件かひと目で区別できるようにする。
+ * =================================================================== */
+
+const TICK_MS = 300;        // デモ用: 実時間0.3秒 = 仮想1分 として演出する（実運用は本物の分単位）
+const TOTAL_MINUTES = 30;   // 受託〜到着予定までの想定分数
+const LOCK_AT_MINUTE = TOTAL_MINUTES - 10; // 出発10分前(T-10)＝経過20分でロック
+const MAX_ACTIVE_REQUESTS = 4; // デモの見やすさのための同時進行上限
+
+/** 案件ごとの識別カラー。新しいリクエストが来るたびに順番に割り当てる（同じ薬局からの2件目でも色が変わる） */
+const COLOR_THEMES = [
+  { dot: '#f59e0b', tint: '#fef3c7' }, // amber
+  { dot: '#0284c7', tint: '#e0f2fe' }, // sky
+  { dot: '#db2777', tint: '#fce7f3' }, // pink
+  { dot: '#7c3aed', tint: '#ede9fe' }, // purple
+  { dot: '#0d9488', tint: '#ccfbf1' }, // teal
+];
+
+/** デモ用の薬局プリセット（地図上の座標込み）。リクエスト発生のたびにランダムで選ぶ */
+const PHARMACY_PRESETS = [
+  {
+    name: '〇〇調剤薬局',
+    pin: { x: 380, y: 460 },
+    labelBox: { x: 190, y: 470, w: 185, h: 42 },
+    destinationArea: '西区元岡エリア',
+    destZonePoints: '650,435 860,420 880,520 780,555 630,520',
+    destLabel: { x: 755, y: 490 },
+    fareEstimate: 2800,
+    minutesToPharmacy: 4,
+  },
+  {
+    name: '△△薬局',
+    pin: { x: 250, y: 150 },
+    labelBox: { x: 65, y: 160, w: 175, h: 42 },
+    destinationArea: '西区姪浜エリア',
+    // 現在地アイコン(150,330)・駅ラベルと重ならないよう、地図右上の空きスペースに配置
+    destZonePoints: '470,40 650,25 685,120 590,155 450,125',
+    destLabel: { x: 565, y: 90 },
+    fareEstimate: 1900,
+    minutesToPharmacy: 6,
+  },
+];
+
+const state = {
+  requests: [],      // 進行中・見送り・完了などすべてのリクエストを保持する配列
+  requestCounter: 0, // 「案件1」「案件2」…の連番＆色の割り当てに使う
+};
+
+// ------------------------------------------------------------
+// 操作関数
+// ------------------------------------------------------------
+
+/** 薬局の物理ボタン押下を模擬する（デモ操作パネルから呼ばれる）。薬局はランダムに選ばれる */
+function createRequest() {
+  const activeCount = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED').length;
+  if (activeCount >= MAX_ACTIVE_REQUESTS) return;
+
+  const pharmacy = PHARMACY_PRESETS[Math.floor(Math.random() * PHARMACY_PRESETS.length)];
+  state.requestCounter += 1;
+  const req = {
+    id: `req-${Date.now()}-${state.requestCounter}`,
+    label: `案件${state.requestCounter}`,
+    // 同じ薬局からでも、リクエストが来るたびに順番に色を割り当てるので必ず見分けがつく
+    color: COLOR_THEMES[(state.requestCounter - 1) % COLOR_THEMES.length],
+    pharmacy,
+    status: 'REQUESTED', // REQUESTED -> ACCEPTED -> (locked/arrived/dispensingDoneが進行) / DECLINED / CANCELLED
+    countdown: TOTAL_MINUTES,
+    minutesSinceAccept: 0,
+    locked: false,
+    arrived: false,
+    dispensingDone: false,
+    dispensingTargetMinute: null,
+    dispensingEstimateMinutes: null,
+    timerId: null,
+    transientTimerId: null,
+    collapsed: false, // trueの間は「待ち時間だけ」の1行表示に折りたたむ
+    _lastSignature: null,
+  };
+  state.requests.push(req);
+  render();
+}
+
+/** カードの折りたたみ／展開を切り替える（複数案件が並ぶ画面を整理するため） */
+function toggleCollapse(id) {
+  const req = state.requests.find(r => r.id === id);
+  if (!req) return;
+  req.collapsed = !req.collapsed;
+  render();
+}
+
+/** 折りたたみ表示用の短いステータス文言（待ち時間が一目でわかる最小限の情報） */
+function getCompactStatusText(req) {
+  if (req.status === 'REQUESTED') return 'お迎え予定 30分後';
+  if (req.status === 'DECLINED') return '見送り済み';
+  if (req.status === 'CANCELLED') return 'キャンセル済み';
+  // ACCEPTED
+  if (req.arrived) return '🚕 到着';
+  if (req.locked) return `🔒 あと${req.countdown}分`;
+  return `あと${req.countdown}分`;
+}
+
+/** タクシー側：ドライバーが「事前受託する」を押した瞬間 = 本命枠の確保 */
+function acceptRequest(id) {
+  const req = state.requests.find(r => r.id === id);
+  if (!req || req.status !== 'REQUESTED') return;
+  req.status = 'ACCEPTED';
+  req.countdown = TOTAL_MINUTES;
+  req.minutesSinceAccept = 0;
+  req.locked = false;
+  req.arrived = false;
+  req.dispensingDone = false;
+  // 調剤完了のタイミングは会計・調剤の混み具合で毎回変動する（内部の真の完了予定・タクシー側には非公開）。
+  // 到着予定（経過30分）より早いことが多いが、遅れて到着後に完了することもある。
+  req.dispensingTargetMinute = 8 + Math.floor(Math.random() * 26); // 経過8〜33分のどこかでランダムに完了
+  req.dispensingEstimateMinutes = req.dispensingTargetMinute;
+  startRequestCountdown(req);
+  render();
+}
+
+/** タクシー側：ドライバーが「見送る」を押した瞬間 = この案件は受託しない意思表示 */
+function declineRequest(id) {
+  const req = state.requests.find(r => r.id === id);
+  if (!req || req.status !== 'REQUESTED') return;
+  req.status = 'DECLINED';
+  render();
+  // 実際は他のドライバーへ募集が引き継がれる。デモでは少し待ってカードを消す
+  req.transientTimerId = setTimeout(() => removeRequest(id), 2200);
+}
+
+/**
+ * タクシー側：事前受託後、出発10分前（T-10のロック）より前であれば
+ * ペナルティなしでいつでもキャンセルできる。ロック後はキャンセル不可。
+ */
+function cancelRequest(id) {
+  const req = state.requests.find(r => r.id === id);
+  if (!req || req.status !== 'ACCEPTED' || req.locked) return;
+  if (req.timerId) clearInterval(req.timerId);
+  req.timerId = null;
+  req.status = 'CANCELLED';
+  render();
+  // 実際は控え、または他のドライバーへ自動で引き継がれる。デモでは少し待ってカードを消す
+  req.transientTimerId = setTimeout(() => removeRequest(id), 2200);
+}
+
+/** カードを一覧から取り除く（見送り／キャンセル後の自動消去、完了カードの手動クローズ両方から使う） */
+function removeRequest(id) {
+  const idx = state.requests.findIndex(r => r.id === id);
+  if (idx === -1) return;
+  const req = state.requests[idx];
+  if (req.timerId) clearInterval(req.timerId);
+  if (req.transientTimerId) clearTimeout(req.transientTimerId);
+  state.requests.splice(idx, 1);
+  render();
+}
+
+/** 現在の調剤進行度（0〜100%）。タクシー側の画面には「進み具合」だけを見せ、完了予定時刻そのものは見せない */
+function getDispensingProgressPercent(req) {
+  if (req.dispensingDone) return 100;
+  if (!req.dispensingTargetMinute) return 0;
+  return Math.max(0, Math.min(100, Math.round((req.minutesSinceAccept / req.dispensingTargetMinute) * 100)));
+}
+
+/**
+ * タクシー側に見せる「完了予測時間」を更新する。
+ * 内部の真の残り時間そのものではなく、そこに毎回ブレ（±3分）を乗せた目安値にする。
+ * → 調剤の進み具合次第で、予測が早まったり遅れたりして前後する見た目を再現する。
+ */
+function updateDispensingEstimate(req) {
+  const trueRemaining = Math.max(req.dispensingTargetMinute - req.minutesSinceAccept, 0);
+  if (trueRemaining <= 0) {
+    req.dispensingEstimateMinutes = 0;
+    return;
+  }
+  const jitter = Math.floor(Math.random() * 7) - 3; // -3〜+3分のブレ
+  req.dispensingEstimateMinutes = Math.max(1, trueRemaining + jitter);
+}
+
+/** リクエストごとに独立したタイマーを回す（複数案件が同時に、別々のペースで進行できるようにする） */
+function startRequestCountdown(req) {
+  if (req.timerId) clearInterval(req.timerId);
+  req.timerId = setInterval(() => {
+    req.minutesSinceAccept += 1;
+    req.countdown = Math.max(TOTAL_MINUTES - req.minutesSinceAccept, 0);
+    // 出発10分前(T-10)に達した瞬間、確定ロック状態へ切り替える
+    if (!req.locked && req.minutesSinceAccept >= LOCK_AT_MINUTE) {
+      req.locked = true;
+    }
+    // 到着予定時刻（経過30分）に到達
+    if (!req.arrived && req.minutesSinceAccept >= TOTAL_MINUTES) {
+      req.arrived = true;
+    }
+    // 調剤完了はランダムに決めたタイミングで、通知として初めてタクシー側に届く。
+    // 到着予定ちょうど（ゼロ）で来るとは限らず、到着後にずれ込むこともある。
+    if (!req.dispensingDone && req.minutesSinceAccept >= req.dispensingTargetMinute) {
+      req.dispensingDone = true;
+    }
+    if (!req.dispensingDone) {
+      updateDispensingEstimate(req);
+    }
+    // 到着済み・調剤完了済みの両方が揃ったらこの案件のタイマーは終了
+    if (req.arrived && req.dispensingDone) {
+      clearInterval(req.timerId);
+      req.timerId = null;
+    }
+    render();
+  }, TICK_MS);
+}
+
+function resetDemo() {
+  state.requests.forEach(req => {
+    if (req.timerId) clearInterval(req.timerId);
+    if (req.transientTimerId) clearTimeout(req.transientTimerId);
+  });
+  state.requests = [];
+  state.requestCounter = 0;
+  render();
+}
+
+/** 画面端の解説チップスの開閉（もう一方が開いていれば閉じてから開く） */
+function toggleTip(name) {
+  const panels = { privacy: 'tip-privacy-panel', timing: 'tip-timing-panel' };
+  Object.entries(panels).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (key === name) {
+      el.classList.toggle('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  });
+}
+
+// ------------------------------------------------------------
+// 描画：ヘッダーのサマリーバッジ／デモ操作ボタンの活性状態
+// ------------------------------------------------------------
+
+function renderHeader() {
+  const badge = document.getElementById('phase-badge');
+  const requestedCount = state.requests.filter(r => r.status === 'REQUESTED').length;
+  const acceptedCount = state.requests.filter(r => r.status === 'ACCEPTED').length;
+
+  if (state.requests.length === 0) {
+    badge.textContent = '待機中（リクエストなし）';
+    badge.className = 'text-xs font-bold px-3 py-1.5 rounded-full whitespace-nowrap bg-slate-200 text-slate-600';
+  } else {
+    badge.textContent = `📡 着信中 ${requestedCount}件 ／ ✅ 受託済み ${acceptedCount}件`;
+    badge.className = 'text-xs font-bold px-3 py-1.5 rounded-full whitespace-nowrap bg-amber-100 text-amber-700';
+  }
+
+  const activeCount = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED').length;
+  const trigger = document.getElementById('trigger-request-btn');
+  trigger.disabled = activeCount >= MAX_ACTIVE_REQUESTS;
+  trigger.textContent = activeCount >= MAX_ACTIVE_REQUESTS
+    ? `⛔ 同時進行の上限（${MAX_ACTIVE_REQUESTS}件）に達しています`
+    : '📨 新しい事前配車リクエストを発生させる';
+}
+
+// ------------------------------------------------------------
+// 描画：地図（現在地は常時表示。ピン・行先エリア・ルートは案件ごとに色分けして重畳表示）
+// ------------------------------------------------------------
+
+function requestMapMarkupHTML(req, occurrence) {
+  const p = req.pharmacy;
+  const color = req.color.dot;
+  const showRoute = req.status === 'ACCEPTED' && req.locked;
+  // 同じ薬局から複数件来た場合、ピンとラベルが完全に重ならないよう少しずつずらす
+  const offset = occurrence * 18;
+  const pinX = p.pin.x + offset;
+  const pinY = p.pin.y + offset;
+  const labelX = p.labelBox.x + offset;
+  const labelY = p.labelBox.y + offset;
+  const midX = (150 + pinX) / 2;
+  const midY = (330 + pinY) / 2 - 40;
+
+  return `
+    <g>
+      <polygon points="${p.destZonePoints}" fill="${color}" opacity="0.18"/>
+      <polygon points="${p.destZonePoints}" fill="none" stroke="${color}" stroke-width="2.5" stroke-dasharray="6 5"/>
+      <text x="${p.destLabel.x}" y="${p.destLabel.y}" text-anchor="middle" font-size="15" font-weight="bold" fill="${color}">${p.destinationArea}</text>
+      <text x="${p.destLabel.x}" y="${p.destLabel.y + 18}" text-anchor="middle" font-size="10" fill="${color}">（※番地は非開示）</text>
+
+      ${showRoute ? `<path d="M150,330 Q${midX},${midY} ${pinX},${pinY}" fill="none" stroke="${color}" stroke-width="5" class="route-line"/>` : ''}
+
+      <g transform="translate(${pinX},${pinY})">
+        <circle r="9" fill="${color}">
+          <animate attributeName="r" values="9;20" dur="1.4s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.5;0" dur="1.4s" repeatCount="indefinite" additive="sum"/>
+        </circle>
+        <path d="M0,-22 C11,-22 18,-14 18,-4 C18,10 0,26 0,26 C0,26 -18,10 -18,-4 C-18,-14 -11,-22 0,-22 Z" fill="${color}"/>
+        <circle r="6" fill="white"/>
+      </g>
+      <rect x="${labelX}" y="${labelY}" width="${p.labelBox.w}" height="${p.labelBox.h}" rx="8" fill="white" stroke="${color}" stroke-width="1.5"/>
+      <text x="${labelX + 10}" y="${labelY + 17}" font-size="12" font-weight="bold" fill="#1f2937">${req.label}・${p.name}</text>
+      <text x="${labelX + 10}" y="${labelY + 34}" font-size="10" fill="#6b7280">現在地から車で${p.minutesToPharmacy}分</text>
+    </g>`;
+}
+
+function renderMap() {
+  const el = document.getElementById('taxi-map');
+  const visibleRequests = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED');
+  const occurrenceByPharmacy = {};
+  const markers = visibleRequests.map(req => {
+    const occurrence = occurrenceByPharmacy[req.pharmacy.name] || 0;
+    occurrenceByPharmacy[req.pharmacy.name] = occurrence + 1;
+    return requestMapMarkupHTML(req, occurrence);
+  }).join('');
+
+  el.innerHTML = `
+    <svg viewBox="0 0 880 550" class="w-full h-full" preserveAspectRatio="xMidYMid slice">
+      <rect width="880" height="550" fill="#eaf2e6"/>
+      <!-- 公園・緑地 -->
+      <circle cx="120" cy="440" r="90" fill="#dcebd6"/>
+      <circle cx="760" cy="120" r="110" fill="#dcebd6"/>
+
+      <!-- 幹線道路 -->
+      <path d="M -20 380 C 200 300, 380 340, 620 260 S 900 160, 940 140" stroke="#cfd6de" stroke-width="26" fill="none" stroke-linecap="round"/>
+      <path d="M -20 380 C 200 300, 380 340, 620 260 S 900 160, 940 140" stroke="#f6c945" stroke-width="2.5" stroke-dasharray="14 10" fill="none"/>
+      <path d="M 260 -20 C 300 160, 260 300, 340 550" stroke="#d7dde3" stroke-width="18" fill="none" stroke-linecap="round"/>
+      <path d="M 560 -20 C 520 140, 600 320, 560 550" stroke="#d7dde3" stroke-width="16" fill="none" stroke-linecap="round"/>
+
+      <!-- 建物ブロック -->
+      ${[[90,150,34,26],[150,170,26,40],[95,210,44,22],[380,420,30,30],[430,450,44,24],[500,470,26,38],[620,400,34,26],[670,440,26,30],[720,380,40,24],[300,120,30,22],[350,90,24,34]]
+        .map(([x,y,w,h]) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="#c9d2c3"/>`).join('')}
+
+      <!-- 駅アイコン（現在地の目印） -->
+      <g transform="translate(150,330)">
+        <rect x="-26" y="-16" width="52" height="32" rx="6" fill="#94a3b8"/>
+        <text x="0" y="6" text-anchor="middle" font-size="16" fill="white">🚉</text>
+      </g>
+      <text x="150" y="378" text-anchor="middle" font-size="15" fill="#64748b" font-weight="bold">元岡駅前（駅待ち中）</text>
+
+      <!-- 現在地：ドライバーのタクシー（常時パルス表示） -->
+      <g transform="translate(150,330)">
+        <circle r="10" fill="#2563eb" opacity="0.55">
+          <animate attributeName="r" values="10;30" dur="1.6s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.55;0" dur="1.6s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="9" fill="#2563eb" stroke="white" stroke-width="2.5"/>
+        <text x="0" y="5" text-anchor="middle" font-size="12">🚕</text>
+      </g>
+
+      <!-- 案件ごとの薬局ピン・行先エリア・ルート（色分け表示） -->
+      ${markers}
+    </svg>
+  `;
+}
+
+// ------------------------------------------------------------
+// 描画：現在地ピル（常時表示）
+// ------------------------------------------------------------
+
+function renderLocationPill() {
+  const el = document.getElementById('taxi-location-pill');
+  el.innerHTML = `
+    <div class="bg-white/90 backdrop-blur rounded-full shadow-lg px-3 py-1.5 flex items-center gap-1.5 max-w-[180px] sm:max-w-none">
+      <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot shrink-0"></span>
+      <span class="text-xs font-bold text-slate-600 truncate">📍 元岡駅前・駅待ち中</span>
+    </div>`;
+}
+
+// ------------------------------------------------------------
+// 描画：地図上に重なる通知／確定パネル（複数案件を縦に並べて表示）
+// ------------------------------------------------------------
+
+/** 折りたたみ時：待ち時間だけがわかる1行表示 */
+function buildCollapsedCardHTML(req) {
+  return `
+    <div class="bg-white border-2 rounded-2xl shadow-lg overflow-hidden" style="border-color:${req.color.dot}">
+      <button onclick="toggleCollapse('${req.id}')"
+        class="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left" style="background:${req.color.tint}">
+        <span class="flex items-center gap-1.5 min-w-0">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${req.color.dot}"></span>
+          <span class="text-[11px] font-bold shrink-0" style="color:${req.color.dot}">${req.label}</span>
+          <span class="text-[11px] text-slate-500 truncate">・${req.pharmacy.name}</span>
+        </span>
+        <span class="flex items-center gap-1.5 shrink-0">
+          <span id="countdown-compact-${req.id}" class="text-xs font-black text-slate-700 whitespace-nowrap">${getCompactStatusText(req)}</span>
+          <span class="text-slate-400 text-xs">▸ 展開</span>
+        </span>
+      </button>
+    </div>`;
+}
+
+/** カードの中身（識別カラーの帯＋状態に応じた本文）を組み立てる */
+function buildCardHTML(req) {
+  if (req.collapsed) return buildCollapsedCardHTML(req);
+
+  const identityStrip = `
+    <div class="flex items-center justify-between gap-1.5 px-3 py-1.5" style="background:${req.color.tint}">
+      <span class="flex items-center gap-1.5 min-w-0">
+        <span class="w-2 h-2 rounded-full shrink-0" style="background:${req.color.dot}"></span>
+        <span class="text-[11px] font-bold shrink-0" style="color:${req.color.dot}">${req.label}</span>
+        <span class="text-[11px] text-slate-400 truncate">・${req.pharmacy.name}</span>
+      </span>
+      <button onclick="toggleCollapse('${req.id}')" title="折りたたむ（待ち時間だけ表示）"
+        class="shrink-0 text-slate-400 hover:text-slate-600 text-xs font-bold px-1.5 leading-none">▾ 折りたたむ</button>
+    </div>`;
+
+  if (req.status === 'REQUESTED') {
+    return `
+      <div class="anim-slide-in bg-white border-2 rounded-2xl shadow-2xl overflow-hidden" style="border-color:${req.color.dot}">
+        ${identityStrip}
+        <div class="bg-amber-400 text-slate-900 px-4 py-2 font-black text-sm leading-snug">
+          🚨 すぐタク：30分後の事前配車リクエストが発生しました！
+        </div>
+        <div class="p-4 space-y-2.5 text-sm">
+          <div>
+            <p class="text-slate-400 font-bold text-[11px]">【乗車場所】</p>
+            <p class="text-[15px] font-bold text-slate-800">${req.pharmacy.name}（現在地から車で${req.pharmacy.minutesToPharmacy}分）</p>
+          </div>
+          <div>
+            <p class="text-slate-400 font-bold text-[11px]">【行先目安】</p>
+            <p class="text-[15px] font-bold text-slate-800">${req.pharmacy.destinationArea}<span class="text-[11px] text-slate-400">（※番地は非開示）</span></p>
+          </div>
+          <div>
+            <p class="text-slate-400 font-bold text-[11px]">【予測運賃】</p>
+            <p class="text-[15px] font-bold text-emerald-600">約${req.pharmacy.fareEstimate.toLocaleString()}円<span class="text-[11px] text-slate-400">（中距離案件）</span></p>
+          </div>
+          <div>
+            <p class="text-slate-400 font-bold text-[11px]">【運行スケジュール】</p>
+            <p class="text-[15px] font-bold text-slate-800">お迎えまで あと30分</p>
+            <p class="text-[11px] text-slate-400">※それまでは通常の流し営業を自由に行ってください</p>
+          </div>
+        </div>
+        <div class="p-4 pt-0 space-y-2">
+          <button onclick="acceptRequest('${req.id}')"
+            class="w-full py-3.5 rounded-xl bg-sky-500 hover:bg-sky-600 active:scale-[.98] text-white font-black text-sm shadow-lg transition-all">
+            🔵 この案件を事前受託する（本命枠を確保）
+          </button>
+          <button onclick="declineRequest('${req.id}')"
+            class="w-full py-2.5 rounded-xl bg-white hover:bg-slate-100 active:scale-[.98] text-slate-500 font-bold text-sm border-2 border-slate-200 transition-all">
+            ✕ 今回は見送る
+          </button>
+        </div>
+      </div>`;
+  }
+
+  if (req.status === 'DECLINED') {
+    return `
+      <div class="anim-slide-in bg-white border-2 rounded-2xl shadow-2xl overflow-hidden" style="border-color:${req.color.dot}">
+        ${identityStrip}
+        <div class="bg-slate-500 text-white px-4 py-2 font-black text-sm">
+          🚫 この案件を見送りました
+        </div>
+        <div class="p-4 text-sm text-slate-600 leading-relaxed">
+          ご回答ありがとうございました。この配車リクエストは、周辺の他のタクシーへ自動で引き継がれます。
+        </div>
+      </div>`;
+  }
+
+  if (req.status === 'CANCELLED') {
+    return `
+      <div class="anim-slide-in bg-white border-2 rounded-2xl shadow-2xl overflow-hidden" style="border-color:${req.color.dot}">
+        ${identityStrip}
+        <div class="bg-slate-500 text-white px-4 py-2 font-black text-sm">
+          🔓 本命枠をキャンセルしました
+        </div>
+        <div class="p-4 text-sm text-slate-600 leading-relaxed">
+          ペナルティはありません。この配車リクエストは、控え、または周辺の他のタクシーへ自動で引き継がれます。
+        </div>
+      </div>`;
+  }
+
+  // ACCEPTED
+  const finished = req.arrived && req.dispensingDone;
+  return `
+    <div class="anim-slide-in bg-white border-2 rounded-2xl shadow-2xl overflow-hidden" style="border-color:${req.color.dot}">
+      ${identityStrip}
+      <div class="${req.locked ? 'bg-indigo-500' : 'bg-emerald-500'} text-white px-4 py-2 font-black text-sm">
+        ${req.arrived ? '🚕 到着エリアに接近中' : req.locked ? '🔒 確定ロック中（ナビ開始）' : '✅ 事前受託 確定済み'}
+      </div>
+      <div class="p-4 space-y-3 text-sm">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+          <div class="flex items-center justify-between mb-1.5">
+            <p class="text-[11px] text-amber-700/70 font-bold">💊 薬局の調剤状況</p>
+            <p id="dispensing-stage-label-${req.id}" class="text-[12px] font-bold ${req.dispensingDone ? 'text-amber-700' : 'text-amber-600/70'}">
+              ${req.dispensingDone ? '調剤完了：会計待ち' : '調剤中…'}
+            </p>
+          </div>
+          <div class="w-full h-2 rounded-full bg-amber-100 overflow-hidden">
+            <div id="dispensing-progress-bar-${req.id}" class="h-full rounded-full bg-amber-500 transition-all duration-300"
+              style="width: ${getDispensingProgressPercent(req)}%;"></div>
+          </div>
+          ${!req.dispensingDone ? `
+            <p id="dispensing-eta-${req.id}" class="text-[11px] text-amber-600/70 mt-1.5">
+              完了まで あと約 <span class="font-bold">${req.dispensingEstimateMinutes}</span> 分（目安・進み具合で前後します）
+            </p>` : ''}
+        </div>
+        <p class="text-[15px] font-bold text-slate-800 leading-relaxed">
+          ${req.arrived
+            ? '🎉 到着予定時刻になりました。乗車チケットを持ったお客様を探してください。'
+            : req.locked
+              ? '出発10分前になりました。自動で確定ロック＆ルートナビが開始されています。このままお迎えへ向かってください。'
+              : '受託が確定しました。出発10分前（T-10）に自動で確定ロックとルートナビが開始されます。それまでは自由営業をどうぞ！'}
+        </p>
+        <div class="bg-slate-50 rounded-xl p-3 text-center">
+          <p class="text-[11px] text-slate-400 font-bold">お迎えまで</p>
+          <p id="countdown-value-${req.id}" class="text-3xl font-black ${req.locked ? 'text-indigo-500' : 'text-emerald-500'}">
+            ${req.arrived ? '到着' : `あと ${req.countdown} 分`}
+          </p>
+        </div>
+        <div class="text-[11px] text-slate-400 leading-relaxed border-t pt-2">
+          乗車場所：${req.pharmacy.name}／行先：${req.pharmacy.destinationArea}／予測運賃：約${req.pharmacy.fareEstimate.toLocaleString()}円
+        </div>
+        ${finished ? `
+          <button onclick="removeRequest('${req.id}')"
+            class="w-full py-2.5 rounded-xl bg-white hover:bg-slate-100 active:scale-[.98] text-slate-500 font-bold text-sm border-2 border-slate-200 transition-all">
+            ✕ この案件を閉じる（乗車完了）
+          </button>` : !req.locked ? `
+          <button onclick="cancelRequest('${req.id}')"
+            class="w-full py-2.5 rounded-xl bg-white hover:bg-slate-100 active:scale-[.98] text-slate-500 font-bold text-sm border-2 border-slate-200 transition-all">
+            🔓 キャンセルする（本命枠を解放・ペナルティなし）
+          </button>` : `
+          <p class="text-center text-[11px] text-indigo-400 font-bold">🔒 出発10分前を過ぎたためキャンセルはできません</p>`
+        }
+      </div>
+    </div>`;
+}
+
+/** 数字・進捗バーなど、頻繁に変わる部分だけをその場で書き換える（カード全体は再生成しない） */
+function patchCardDynamicParts(cardEl, req) {
+  const countdownEl = cardEl.querySelector(`#countdown-value-${req.id}`);
+  if (countdownEl) countdownEl.textContent = req.arrived ? '到着' : `あと ${req.countdown} 分`;
+
+  const compactEl = cardEl.querySelector(`#countdown-compact-${req.id}`);
+  if (compactEl) compactEl.textContent = getCompactStatusText(req);
+
+  const bar = cardEl.querySelector(`#dispensing-progress-bar-${req.id}`);
+  if (bar) bar.style.width = getDispensingProgressPercent(req) + '%';
+
+  const eta = cardEl.querySelector(`#dispensing-eta-${req.id}`);
+  if (eta) {
+    eta.innerHTML = `完了まで あと約 <span class="font-bold">${req.dispensingEstimateMinutes}</span> 分（目安・進み具合で前後します）`;
+  }
+}
+
+/**
+ * 通知カードは「見た目（文言・色・枠）」が変わる瞬間だけ作り直す。
+ * カウントダウンの数字などが変わるだけの毎tickでは、カード全体を再生成しない。
+ * → innerHTMLを丸ごと差し替えると毎回スライドインアニメーションが再生されて
+ *   「1分ごとに横からスライドしてうざい」状態になっていたため。
+ * 複数カードを同時に扱うため、案件ごとにdata-req-idを振った専用のラッパーDOMを
+ * 使い回し、追加・削除・内容更新を個別に行う。
+ */
+function renderOverlayList() {
+  const container = document.getElementById('taxi-overlay');
+
+  if (state.requests.length === 0) {
+    if (container.dataset.empty !== 'true') {
+      container.innerHTML = `
+        <div class="bg-white/85 backdrop-blur rounded-xl px-3 py-2.5 text-slate-400 text-xs font-bold text-center">
+          現在、事前配車リクエストはありません
+        </div>`;
+      container.dataset.empty = 'true';
+    }
+    return;
+  }
+  if (container.dataset.empty === 'true') {
+    container.innerHTML = '';
+    container.dataset.empty = 'false';
+  }
+
+  // 現在地から薬局までの所要時間（＝距離の目安）が近い案件ほど上に表示する。
+  // 同じ薬局同士は元の受信順を維持する（Array#sortは安定ソート）。
+  const sortedRequests = [...state.requests].sort(
+    (a, b) => a.pharmacy.minutesToPharmacy - b.pharmacy.minutesToPharmacy
+  );
+
+  const currentIds = new Set(sortedRequests.map(r => r.id));
+  Array.from(container.children).forEach(child => {
+    if (child.dataset.reqId && !currentIds.has(child.dataset.reqId)) {
+      container.removeChild(child);
+    }
+  });
+
+  // 距離は時間経過で変わらないため、既存カードは動かさず、新規カードだけを
+  // 正しい距離順の位置に挿入する（不要な並べ替えでスライドインが再生されるのを防ぐ）。
+  sortedRequests.forEach((req, index) => {
+    const signature = `${req.status}|${req.locked}|${req.arrived}|${req.dispensingDone}|${req.collapsed}`;
+    let cardEl = container.querySelector(`[data-req-id="${req.id}"]`);
+    if (!cardEl) {
+      cardEl = document.createElement('div');
+      cardEl.dataset.reqId = req.id;
+      const referenceEl = container.children[index] || null;
+      container.insertBefore(cardEl, referenceEl);
+      cardEl.innerHTML = buildCardHTML(req);
+      req._lastSignature = signature;
+    } else if (req._lastSignature !== signature) {
+      cardEl.innerHTML = buildCardHTML(req);
+      req._lastSignature = signature;
+    } else {
+      patchCardDynamicParts(cardEl, req);
+    }
+  });
+}
+
+// ------------------------------------------------------------
+// 総合描画
+// ------------------------------------------------------------
+
+function render() {
+  renderHeader();
+  renderMap();
+  renderLocationPill();
+  renderOverlayList();
+}
+
+render();
+</script>
+</body>
+</html>

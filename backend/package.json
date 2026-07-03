@@ -1,0 +1,16 @@
+{
+  "name": "sugutaku-matching-engine",
+  "version": "1.0.0",
+  "description": "すぐタク - シニア向けデータ配車プラットフォーム 統合コアロジック",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "demo": "ts-node src/demo.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.14.10"
+  }
+}
