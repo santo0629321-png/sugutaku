@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>すぐタク PoC デモ｜タクシー車載ナビ画面</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet">
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
 <style>
+  #taxi-map .mapboxgl-ctrl-logo { opacity: .85; }
   body { font-family: "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif; }
 
   /* ==== 通知パネルが右からスッと出てくるアニメーション ==== */
@@ -20,13 +23,6 @@
     50% { opacity: 1; }
   }
   .pulse-dot { animation: pulseDot 1.3s ease-in-out infinite; }
-
-  /* ==== ナビのルート線が流れるアニメーション ==== */
-  .route-line {
-    stroke-dasharray: 10 8;
-    animation: dashFlow 1s linear infinite;
-  }
-  @keyframes dashFlow { to { stroke-dashoffset: -36; } }
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
@@ -118,6 +114,14 @@ const TOTAL_MINUTES = 30;   // 受託〜到着予定までの想定分数
 const LOCK_AT_MINUTE = TOTAL_MINUTES - 10; // 出発10分前(T-10)＝経過20分でロック
 const MAX_ACTIVE_REQUESTS = 4; // デモの見やすさのための同時進行上限
 
+// ⚠️ Mapboxの「URL制限付き」新トークンをここに設定してください。
+// チャットに貼られた旧トークンは無効化済みとして扱い、絶対に使い回さないこと。
+// URL制限：本番は santo0629321-png.github.io/*、開発は localhost:* のみ許可。
+const MAPBOX_TOKEN = 'pk.eyJ1IjoidGFpdGFpMzMzIiwiYSI6ImNtcjVoNWFhMjA0MnUyeXM5cHI5Z3dtamoifQ.yyDrDadshBNCAKwQkU57ZQ'; // 本番用（santo0629321-png.github.io/* にURL制限済み）
+
+/** タクシーの現在地（実在地点：九大学研都市駅前＝元岡エリアの最寄り駅） */
+const CURRENT_LOCATION = { lat: 33.57815, lng: 130.25961, label: '九大学研都市駅' };
+
 /** 案件ごとの識別カラー。新しいリクエストが来るたびに順番に割り当てる（同じ薬局からの2件目でも色が変わる） */
 const COLOR_THEMES = [
   { dot: '#f59e0b', tint: '#fef3c7' }, // amber
@@ -127,30 +131,91 @@ const COLOR_THEMES = [
   { dot: '#0d9488', tint: '#ccfbf1' }, // teal
 ];
 
-/** デモ用の薬局プリセット（地図上の座標込み）。リクエスト発生のたびにランダムで選ぶ */
+/**
+ * デモ用の薬局プリセット（実在座標）。リクエスト発生のたびにランダムで選ぶ。
+ * fareEstimate / minutesToPharmacy はページ読み込み時に Mapbox Directions API で
+ * 実際のルートから1回だけ計算し直す（失敗時はここに書いたフォールバック値のまま使う）。
+ */
 const PHARMACY_PRESETS = [
   {
     name: '〇〇調剤薬局',
-    pin: { x: 380, y: 460 },
-    labelBox: { x: 190, y: 470, w: 185, h: 42 },
+    location: { lat: 33.5790, lng: 130.2615 }, // 九大学研都市駅すぐそば
     destinationArea: '西区元岡エリア',
-    destZonePoints: '650,435 860,420 880,520 780,555 630,520',
-    destLabel: { x: 755, y: 490 },
-    fareEstimate: 2800,
-    minutesToPharmacy: 4,
+    destinationCenter: { lat: 33.59695, lng: 130.22369 }, // 九州大学伊都キャンパス（元岡エリアの代表点）
+    fareEstimate: 2800,      // フォールバック値（Directions取得完了まで／失敗時に使用）
+    minutesToPharmacy: 4,    // フォールバック値
+    routeGeometry: null,     // Directionsのルート形状（取得後に設定）
   },
   {
     name: '△△薬局',
-    pin: { x: 250, y: 150 },
-    labelBox: { x: 65, y: 160, w: 175, h: 42 },
+    location: { lat: 33.5828, lng: 130.3238 }, // 姪浜駅すぐそば
     destinationArea: '西区姪浜エリア',
-    // 現在地アイコン(150,330)・駅ラベルと重ならないよう、地図右上の空きスペースに配置
-    destZonePoints: '470,40 650,25 685,120 590,155 450,125',
-    destLabel: { x: 565, y: 90 },
-    fareEstimate: 1900,
-    minutesToPharmacy: 6,
+    destinationCenter: { lat: 33.581151, lng: 130.324922 }, // 姪浜中央公園（姪浜エリアの代表点）
+    fareEstimate: 1900,      // フォールバック値
+    minutesToPharmacy: 6,    // フォールバック値
+    routeGeometry: null,
   },
 ];
+
+// ------------------------------------------------------------
+// 運賃計算（backend/src/fare.ts のロジックを移植。実走行距離が
+// Mapbox Directionsから直接取れるため、直線距離補正(1.3倍)は行わない）
+// ------------------------------------------------------------
+
+const BASE_FARE_YEN = 500;
+const BASE_DISTANCE_KM = 1.2;
+const METER_STEP_KM = 0.28;
+const METER_STEP_FARE_YEN = 90;
+
+function calculateEstimatedFare(distanceKm) {
+  let fare = BASE_FARE_YEN;
+  const remainingKm = distanceKm - BASE_DISTANCE_KM;
+  if (remainingKm > 0) {
+    fare += Math.ceil(remainingKm / METER_STEP_KM) * METER_STEP_FARE_YEN;
+  }
+  return fare;
+}
+
+// ------------------------------------------------------------
+// Mapbox Directions：ページ読み込み時に薬局プリセットごとに1回だけ呼び、
+// 結果をプリセットへキャッシュする（毎tickのループからは絶対に呼ばない）
+// ------------------------------------------------------------
+
+async function fetchDrivingRoute(from, to) {
+  const url = `https://api.mapbox.com/directions/v5/mapbox/driving/`
+    + `${from.lng},${from.lat};${to.lng},${to.lat}`
+    + `?geometries=geojson&overview=full&access_token=${MAPBOX_TOKEN}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Directions API error: ${res.status}`);
+  const data = await res.json();
+  const route = data.routes && data.routes[0];
+  if (!route) throw new Error('ルートが見つかりませんでした');
+  return { distanceKm: route.distance / 1000, durationMin: route.duration / 60, geometry: route.geometry };
+}
+
+async function loadRealRouteDataForPharmacies() {
+  if (!isMapboxTokenConfigured()) return; // トークン未設定時はフォールバック値のまま動かす
+  for (const pharmacy of PHARMACY_PRESETS) {
+    try {
+      const toPharmacy = await fetchDrivingRoute(CURRENT_LOCATION, pharmacy.location);
+      pharmacy.minutesToPharmacy = Math.max(1, Math.round(toPharmacy.durationMin));
+      pharmacy.routeGeometry = toPharmacy.geometry;
+    } catch (err) {
+      console.warn(`[すぐタク] ${pharmacy.name}: 現在地→薬局のルート取得に失敗、フォールバック値を使用`, err);
+    }
+    try {
+      const toDestination = await fetchDrivingRoute(pharmacy.location, pharmacy.destinationCenter);
+      pharmacy.fareEstimate = calculateEstimatedFare(toDestination.distanceKm);
+    } catch (err) {
+      console.warn(`[すぐタク] ${pharmacy.name}: 薬局→行先の距離取得に失敗、フォールバック値を使用`, err);
+    }
+    render(); // 取得済みの案件カード・地図にも実値を反映する
+  }
+}
+
+function isMapboxTokenConfigured() {
+  return typeof MAPBOX_TOKEN === 'string' && MAPBOX_TOKEN.length > 0 && !MAPBOX_TOKEN.startsWith('YOUR_');
+}
 
 const state = {
   requests: [],      // 進行中・見送り・完了などすべてのリクエストを保持する配列
@@ -366,93 +431,142 @@ function renderHeader() {
 }
 
 // ------------------------------------------------------------
-// 描画：地図（現在地は常時表示。ピン・行先エリア・ルートは案件ごとに色分けして重畳表示）
+// 地図（Mapbox GL JS の実地図。初期化は1回だけ行い、以後は
+// 案件ごとのマーカー／レイヤーを差分更新する（毎tick作り直さない）
 // ------------------------------------------------------------
 
-function requestMapMarkupHTML(req, occurrence) {
-  const p = req.pharmacy;
-  const color = req.color.dot;
-  const showRoute = req.status === 'ACCEPTED' && req.locked;
-  // 同じ薬局から複数件来た場合、ピンとラベルが完全に重ならないよう少しずつずらす
-  const offset = occurrence * 18;
-  const pinX = p.pin.x + offset;
-  const pinY = p.pin.y + offset;
-  const labelX = p.labelBox.x + offset;
-  const labelY = p.labelBox.y + offset;
-  const midX = (150 + pinX) / 2;
-  const midY = (330 + pinY) / 2 - 40;
+let map = null;
+let mapReady = false;
+const mapEntities = new Map(); // reqId -> { marker, destSourceId, routeSourceId, ...layerIds, routeDrawn }
 
-  return `
-    <g>
-      <polygon points="${p.destZonePoints}" fill="${color}" opacity="0.18"/>
-      <polygon points="${p.destZonePoints}" fill="none" stroke="${color}" stroke-width="2.5" stroke-dasharray="6 5"/>
-      <text x="${p.destLabel.x}" y="${p.destLabel.y}" text-anchor="middle" font-size="15" font-weight="bold" fill="${color}">${p.destinationArea}</text>
-      <text x="${p.destLabel.x}" y="${p.destLabel.y + 18}" text-anchor="middle" font-size="10" fill="${color}">（※番地は非開示）</text>
+function initMap() {
+  const container = document.getElementById('taxi-map');
 
-      ${showRoute ? `<path d="M150,330 Q${midX},${midY} ${pinX},${pinY}" fill="none" stroke="${color}" stroke-width="5" class="route-line"/>` : ''}
+  if (typeof mapboxgl === 'undefined') {
+    container.innerHTML = `<div class="w-full h-full flex items-center justify-center bg-slate-800 text-white/70 text-sm p-6 text-center">Mapbox GL JS を読み込めませんでした（ネットワークをご確認ください）</div>`;
+    return;
+  }
+  if (!isMapboxTokenConfigured()) {
+    container.innerHTML = `<div class="w-full h-full flex items-center justify-center bg-slate-800 text-white/70 text-sm p-6 text-center">Mapboxトークン未設定のため地図を表示できません<br>（URL制限付きの新トークンを設定してください）</div>`;
+    return;
+  }
 
-      <g transform="translate(${pinX},${pinY})">
-        <circle r="9" fill="${color}">
-          <animate attributeName="r" values="9;20" dur="1.4s" repeatCount="indefinite"/>
-          <animate attributeName="opacity" values="0.5;0" dur="1.4s" repeatCount="indefinite" additive="sum"/>
-        </circle>
-        <path d="M0,-22 C11,-22 18,-14 18,-4 C18,10 0,26 0,26 C0,26 -18,10 -18,-4 C-18,-14 -11,-22 0,-22 Z" fill="${color}"/>
-        <circle r="6" fill="white"/>
-      </g>
-      <rect x="${labelX}" y="${labelY}" width="${p.labelBox.w}" height="${p.labelBox.h}" rx="8" fill="white" stroke="${color}" stroke-width="1.5"/>
-      <text x="${labelX + 10}" y="${labelY + 17}" font-size="12" font-weight="bold" fill="#1f2937">${req.label}・${p.name}</text>
-      <text x="${labelX + 10}" y="${labelY + 34}" font-size="10" fill="#6b7280">現在地から車で${p.minutesToPharmacy}分</text>
-    </g>`;
+  mapboxgl.accessToken = MAPBOX_TOKEN;
+  map = new mapboxgl.Map({
+    container,
+    style: 'mapbox://styles/mapbox/streets-v12',
+    center: [CURRENT_LOCATION.lng, CURRENT_LOCATION.lat],
+    zoom: 12,
+    attributionControl: false,
+  });
+  map.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-left');
+
+  map.on('load', () => {
+    mapReady = true;
+
+    // 現在地：ドライバーのタクシー（実座標）
+    const el = document.createElement('div');
+    el.style.cssText = 'width:18px;height:18px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 6px rgba(37,99,235,.3);';
+    new mapboxgl.Marker({ element: el }).setLngLat([CURRENT_LOCATION.lng, CURRENT_LOCATION.lat]).addTo(map);
+
+    updateMapEntities();
+  });
+  map.on('error', (e) => console.error('[すぐタク] Mapboxエラー', e && e.error));
+
+  window.addEventListener('resize', () => { if (map) map.resize(); });
 }
 
-function renderMap() {
-  const el = document.getElementById('taxi-map');
-  const visibleRequests = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED');
-  const occurrenceByPharmacy = {};
-  const markers = visibleRequests.map(req => {
-    const occurrence = occurrenceByPharmacy[req.pharmacy.name] || 0;
-    occurrenceByPharmacy[req.pharmacy.name] = occurrence + 1;
-    return requestMapMarkupHTML(req, occurrence);
-  }).join('');
+/** 案件（薬局ピン・行先エリア・ルート）用のマーカー／レイヤーをまとめて作成する */
+function createMapEntity(req) {
+  const p = req.pharmacy;
+  const color = req.color.dot;
 
-  el.innerHTML = `
-    <svg viewBox="0 0 880 550" class="w-full h-full" preserveAspectRatio="xMidYMid slice">
-      <rect width="880" height="550" fill="#eaf2e6"/>
-      <!-- 公園・緑地 -->
-      <circle cx="120" cy="440" r="90" fill="#dcebd6"/>
-      <circle cx="760" cy="120" r="110" fill="#dcebd6"/>
+  const pinEl = document.createElement('div');
+  pinEl.style.cssText = `width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);`
+    + `background:${color};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);`;
+  const marker = new mapboxgl.Marker({ element: pinEl, anchor: 'bottom' })
+    .setLngLat([p.location.lng, p.location.lat])
+    .setPopup(new mapboxgl.Popup({ offset: 20, closeButton: false }).setHTML(
+      `<div style="font-size:12px;font-weight:bold;">${req.label}・${p.name}</div>`
+      + `<div style="font-size:11px;color:#666;">現在地から車で${p.minutesToPharmacy}分</div>`
+    ))
+    .addTo(map);
 
-      <!-- 幹線道路 -->
-      <path d="M -20 380 C 200 300, 380 340, 620 260 S 900 160, 940 140" stroke="#cfd6de" stroke-width="26" fill="none" stroke-linecap="round"/>
-      <path d="M -20 380 C 200 300, 380 340, 620 260 S 900 160, 940 140" stroke="#f6c945" stroke-width="2.5" stroke-dasharray="14 10" fill="none"/>
-      <path d="M 260 -20 C 300 160, 260 300, 340 550" stroke="#d7dde3" stroke-width="18" fill="none" stroke-linecap="round"/>
-      <path d="M 560 -20 C 520 140, 600 320, 560 550" stroke="#d7dde3" stroke-width="16" fill="none" stroke-linecap="round"/>
+  const destSourceId = `dest-${req.id}`;
+  const destCircleLayerId = `${destSourceId}-circle`;
+  const destLabelLayerId = `${destSourceId}-label`;
+  map.addSource(destSourceId, {
+    type: 'geojson',
+    data: { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.destinationCenter.lng, p.destinationCenter.lat] } },
+  });
+  map.addLayer({
+    id: destCircleLayerId, type: 'circle', source: destSourceId,
+    paint: { 'circle-radius': 42, 'circle-color': color, 'circle-opacity': 0.18, 'circle-stroke-color': color, 'circle-stroke-width': 2, 'circle-stroke-opacity': 0.6 },
+  });
+  map.addLayer({
+    id: destLabelLayerId, type: 'symbol', source: destSourceId,
+    layout: { 'text-field': `${p.destinationArea}\n（※番地は非開示）`, 'text-size': 12, 'text-offset': [0, 2.4], 'text-anchor': 'top' },
+    paint: { 'text-color': color, 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
+  });
 
-      <!-- 建物ブロック -->
-      ${[[90,150,34,26],[150,170,26,40],[95,210,44,22],[380,420,30,30],[430,450,44,24],[500,470,26,38],[620,400,34,26],[670,440,26,30],[720,380,40,24],[300,120,30,22],[350,90,24,34]]
-        .map(([x,y,w,h]) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="#c9d2c3"/>`).join('')}
+  const routeSourceId = `route-${req.id}`;
+  const routeLineLayerId = `${routeSourceId}-line`;
+  map.addSource(routeSourceId, {
+    type: 'geojson',
+    data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } },
+  });
+  map.addLayer({
+    id: routeLineLayerId, type: 'line', source: routeSourceId,
+    layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+    paint: { 'line-color': color, 'line-width': 5, 'line-opacity': 0.85 },
+  });
 
-      <!-- 駅アイコン（現在地の目印） -->
-      <g transform="translate(150,330)">
-        <rect x="-26" y="-16" width="52" height="32" rx="6" fill="#94a3b8"/>
-        <text x="0" y="6" text-anchor="middle" font-size="16" fill="white">🚉</text>
-      </g>
-      <text x="150" y="378" text-anchor="middle" font-size="15" fill="#64748b" font-weight="bold">元岡駅前（駅待ち中）</text>
+  return { marker, destSourceId, destCircleLayerId, destLabelLayerId, routeSourceId, routeLineLayerId, routeDrawn: false };
+}
 
-      <!-- 現在地：ドライバーのタクシー（常時パルス表示） -->
-      <g transform="translate(150,330)">
-        <circle r="10" fill="#2563eb" opacity="0.55">
-          <animate attributeName="r" values="10;30" dur="1.6s" repeatCount="indefinite"/>
-          <animate attributeName="opacity" values="0.55;0" dur="1.6s" repeatCount="indefinite"/>
-        </circle>
-        <circle r="9" fill="#2563eb" stroke="white" stroke-width="2.5"/>
-        <text x="0" y="5" text-anchor="middle" font-size="12">🚕</text>
-      </g>
+/** ロック状態に応じてルート線の表示・非表示を切り替え、初回だけ実ジオメトリを描く */
+function updateMapEntityRoute(entity, req) {
+  const showRoute = req.status === 'ACCEPTED' && req.locked;
+  if (map.getLayer(entity.routeLineLayerId)) {
+    map.setLayoutProperty(entity.routeLineLayerId, 'visibility', showRoute ? 'visible' : 'none');
+  }
+  if (showRoute && !entity.routeDrawn && req.pharmacy.routeGeometry) {
+    map.getSource(entity.routeSourceId).setData({ type: 'Feature', properties: {}, geometry: req.pharmacy.routeGeometry });
+    entity.routeDrawn = true;
+  }
+}
 
-      <!-- 案件ごとの薬局ピン・行先エリア・ルート（色分け表示） -->
-      ${markers}
-    </svg>
-  `;
+function removeMapEntity(entity) {
+  entity.marker.remove();
+  [entity.routeLineLayerId, entity.destCircleLayerId, entity.destLabelLayerId].forEach(id => {
+    if (map.getLayer(id)) map.removeLayer(id);
+  });
+  [entity.destSourceId, entity.routeSourceId].forEach(id => {
+    if (map.getSource(id)) map.removeSource(id);
+  });
+}
+
+/** 現在アクティブなリクエストに合わせて、地図上のマーカー／レイヤーを差分更新する */
+function updateMapEntities() {
+  if (!mapReady) return;
+  const visible = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED');
+  const currentIds = new Set(visible.map(r => r.id));
+
+  mapEntities.forEach((entity, id) => {
+    if (!currentIds.has(id)) {
+      removeMapEntity(entity);
+      mapEntities.delete(id);
+    }
+  });
+
+  visible.forEach(req => {
+    let entity = mapEntities.get(req.id);
+    if (!entity) {
+      entity = createMapEntity(req);
+      mapEntities.set(req.id, entity);
+    }
+    updateMapEntityRoute(entity, req);
+  });
 }
 
 // ------------------------------------------------------------
@@ -464,7 +578,7 @@ function renderLocationPill() {
   el.innerHTML = `
     <div class="bg-white/90 backdrop-blur rounded-full shadow-lg px-3 py-1.5 flex items-center gap-1.5 max-w-[180px] sm:max-w-none">
       <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot shrink-0"></span>
-      <span class="text-xs font-bold text-slate-600 truncate">📍 元岡駅前・駅待ち中</span>
+      <span class="text-xs font-bold text-slate-600 truncate">📍 ${CURRENT_LOCATION.label}・駅待ち中</span>
     </div>`;
 }
 
@@ -710,11 +824,13 @@ function renderOverlayList() {
 
 function render() {
   renderHeader();
-  renderMap();
+  updateMapEntities();
   renderLocationPill();
   renderOverlayList();
 }
 
+initMap();
+loadRealRouteDataForPharmacies();
 render();
 </script>
 </body>
