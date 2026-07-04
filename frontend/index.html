@@ -51,16 +51,16 @@
   </div>
 </header>
 
-<!-- ============ デモ操作パネル（薬局の物理ボタンの代わり） ============ -->
+<!-- ============ デモ操作パネル（高齢者の来店・受付検知の代わり） ============ -->
 <div class="max-w-6xl mx-auto px-4 pt-6">
   <div class="flex flex-wrap items-center justify-center gap-3 bg-white border-2 border-dashed border-slate-300 rounded-2xl px-5 py-3">
     <span class="text-slate-400 text-xs md:text-sm font-bold">
-      🎬 プレゼン用の操作パネル（実際は薬局窓口に置かれた「物理ボタン」を高齢者が押すことで発生します。薬局はランダムに選ばれ、同じ薬局から連続で発生することもあります）
+      🎬 プレゼン用の操作パネル（実際はボタン操作不要。事前登録済みのシニア会員が薬局に来店し受付処理された瞬間に自動で発生します。薬局はランダムに選ばれ、同じ薬局から連続で発生することもあります）
     </span>
     <button id="trigger-request-btn" onclick="createRequest()"
       class="px-5 py-2.5 rounded-full bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 disabled:cursor-not-allowed
              text-white font-black text-sm shadow transition-all">
-      📨 新しい事前配車リクエストを発生させる
+      🚪 高齢者が来店・受付された（事前配車リクエスト発生）
     </button>
   </div>
 </div>
@@ -103,7 +103,7 @@
 <script>
 /* ===================================================================
  * すぐタク PoC デモ ロジック（タクシー運転手向け車載ナビ画面）
- * - 薬局の物理ボタン操作は「デモ操作パネル」のボタンで代用する。
+ * - 高齢者の来店・受付検知（ボタン操作は不要）は「デモ操作パネル」のボタンで代用する。
  * - 複数の薬局からの同時リクエスト、同じ薬局からの2件目のリクエストにも対応。
  *   各リクエストには識別カラー（案件ごとの色）を割り当て、通知カード・地図ピンの
  *   両方に反映することで、どの通知がどの案件かひと目で区別できるようにする。
@@ -226,7 +226,7 @@ const state = {
 // 操作関数
 // ------------------------------------------------------------
 
-/** 薬局の物理ボタン押下を模擬する（デモ操作パネルから呼ばれる）。薬局はランダムに選ばれる */
+/** 高齢者の来店・受付（レセコン連携）を模擬する（デモ操作パネルから呼ばれる）。薬局はランダムに選ばれる */
 function createRequest() {
   const activeCount = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED').length;
   if (activeCount >= MAX_ACTIVE_REQUESTS) return;
@@ -427,7 +427,7 @@ function renderHeader() {
   trigger.disabled = activeCount >= MAX_ACTIVE_REQUESTS;
   trigger.textContent = activeCount >= MAX_ACTIVE_REQUESTS
     ? `⛔ 同時進行の上限（${MAX_ACTIVE_REQUESTS}件）に達しています`
-    : '📨 新しい事前配車リクエストを発生させる';
+    : '🚪 高齢者が来店・受付された（事前配車リクエスト発生）';
 }
 
 // ------------------------------------------------------------
