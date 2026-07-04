@@ -141,11 +141,13 @@ const PHARMACY_PRESETS = [
     // 実店舗：リライ薬局 学研都市店（福岡県福岡市西区北原1丁目13-3、九大学研都市駅から徒歩5分）
     name: 'リライ薬局',
     location: { lat: 33.580326, lng: 130.258111 },
-    destinationArea: '西区田尻エリア',
-    destinationCenter: { lat: 33.57852, lng: 130.24718 }, // 田尻エリアの代表点
-    fareEstimate: 900,       // フォールバック値（Directions取得完了まで／失敗時に使用）
+    destinationArea: '九州大学伊都キャンパス',
+    destinationCenter: { lat: 33.59695, lng: 130.22369 }, // 九州大学伊都キャンパス
+    fareEstimate: 1760,      // フォールバック値（Directions取得完了まで／失敗時に使用）
     minutesToPharmacy: 2,    // フォールバック値
-    routeGeometry: null,     // Directionsのルート形状（取得後に設定）
+    rideDistanceKm: 5.0,     // フォールバック値（薬局→行先の距離）
+    routeGeometry: null,     // Directionsのルート形状（現在地→薬局、取得後に設定）
+    rideRouteGeometry: null, // Directionsのルート形状（薬局→行先、取得後に設定）
   },
   {
     name: '△△薬局',
@@ -154,7 +156,9 @@ const PHARMACY_PRESETS = [
     destinationCenter: { lat: 33.581151, lng: 130.324922 }, // 姪浜中央公園（姪浜エリアの代表点）
     fareEstimate: 1900,      // フォールバック値
     minutesToPharmacy: 6,    // フォールバック値
+    rideDistanceKm: 5.5,     // フォールバック値（薬局→行先の距離）
     routeGeometry: null,
+    rideRouteGeometry: null,
   },
 ];
 
@@ -207,6 +211,8 @@ async function loadRealRouteDataForPharmacies() {
     try {
       const toDestination = await fetchDrivingRoute(pharmacy.location, pharmacy.destinationCenter);
       pharmacy.fareEstimate = calculateEstimatedFare(toDestination.distanceKm);
+      pharmacy.rideDistanceKm = Math.round(toDestination.distanceKm * 10) / 10;
+      pharmacy.rideRouteGeometry = toDestination.geometry;
     } catch (err) {
       console.warn(`[すぐタク] ${pharmacy.name}: 薬局→行先の距離取得に失敗、フォールバック値を使用`, err);
     }
@@ -229,8 +235,8 @@ const state = {
 
 /**
  * 高齢者の来店・受付（レセコン連携）を模擬する（デモ操作パネルから呼ばれる）。
- * 最初の1件は必ず「リライ薬局→西区田尻エリア」になるようにし、デモの冒頭で
- * 説明しやすい実在の店舗名・地名を確実に見せる。2件目以降はランダムに選ぶ。
+ * 最初の1件は必ず「リライ薬局→九州大学伊都キャンパス」になるようにし、デモの冒頭で
+ * 説明しやすい実在の店舗名・行先を確実に見せる。2件目以降はランダムに選ぶ。
  */
 function createRequest() {
   const activeCount = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED').length;
@@ -488,10 +494,30 @@ function createMapEntity(req) {
     paint: { 'line-color': color, 'line-width': 5, 'line-opacity': 0.85 },
   });
 
-  return { marker, destSourceId, destCircleLayerId, destLabelLayerId, routeSourceId, routeLineLayerId, routeDrawn: false };
+  // 薬局→行先の想定ルート（乗客がこれから乗る区間）。ロック状態に関係なく常時表示する
+  const rideRouteSourceId = `ride-route-${req.id}`;
+  const rideRouteLineLayerId = `${rideRouteSourceId}-line`;
+  map.addSource(rideRouteSourceId, {
+    type: 'geojson',
+    data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } },
+  });
+  map.addLayer({
+    id: rideRouteLineLayerId, type: 'line', source: rideRouteSourceId,
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': color, 'line-width': 3, 'line-opacity': 0.55, 'line-dasharray': [2, 2] },
+  });
+
+  return {
+    marker, destSourceId, destCircleLayerId, destLabelLayerId,
+    routeSourceId, routeLineLayerId, routeDrawn: false,
+    rideRouteSourceId, rideRouteLineLayerId, rideRouteDrawn: false,
+  };
 }
 
-/** ロック状態に応じてルート線の表示・非表示を切り替え、初回だけ実ジオメトリを描く */
+/**
+ * 現在地→薬局のナビ線はロック状態に応じて表示・非表示を切り替え、初回だけ実ジオメトリを描く。
+ * 薬局→行先の想定ルート線は、ロック状態に関わらずジオメトリが取得でき次第すぐ表示する。
+ */
 function updateMapEntityRoute(entity, req) {
   const showRoute = req.status === 'ACCEPTED' && req.locked;
   if (map.getLayer(entity.routeLineLayerId)) {
@@ -501,14 +527,19 @@ function updateMapEntityRoute(entity, req) {
     map.getSource(entity.routeSourceId).setData({ type: 'Feature', properties: {}, geometry: req.pharmacy.routeGeometry });
     entity.routeDrawn = true;
   }
+
+  if (!entity.rideRouteDrawn && req.pharmacy.rideRouteGeometry) {
+    map.getSource(entity.rideRouteSourceId).setData({ type: 'Feature', properties: {}, geometry: req.pharmacy.rideRouteGeometry });
+    entity.rideRouteDrawn = true;
+  }
 }
 
 function removeMapEntity(entity) {
   entity.marker.remove();
-  [entity.routeLineLayerId, entity.destCircleLayerId, entity.destLabelLayerId].forEach(id => {
+  [entity.routeLineLayerId, entity.rideRouteLineLayerId, entity.destCircleLayerId, entity.destLabelLayerId].forEach(id => {
     if (map.getLayer(id)) map.removeLayer(id);
   });
-  [entity.destSourceId, entity.routeSourceId].forEach(id => {
+  [entity.destSourceId, entity.routeSourceId, entity.rideRouteSourceId].forEach(id => {
     if (map.getSource(id)) map.removeSource(id);
   });
 }
@@ -605,7 +636,7 @@ function buildCardHTML(req) {
           </div>
           <div>
             <p class="text-slate-400 font-bold text-[11px]">【予測運賃】</p>
-            <p class="text-[15px] font-bold text-emerald-600">約${req.pharmacy.fareEstimate.toLocaleString()}円<span class="text-[11px] text-slate-400">（中距離案件）</span></p>
+            <p class="text-[15px] font-bold text-emerald-600">約${req.pharmacy.fareEstimate.toLocaleString()}円<span class="text-[11px] text-slate-400">（薬局→行先 約${req.pharmacy.rideDistanceKm}km）</span></p>
           </div>
           <div>
             <p class="text-slate-400 font-bold text-[11px]">【運行スケジュール】</p>
@@ -675,7 +706,7 @@ function buildCardHTML(req) {
           </p>
         </div>
         <div class="text-[11px] text-slate-400 leading-relaxed border-t pt-2">
-          乗車場所：${req.pharmacy.name}／行先：${req.pharmacy.destinationArea}／予測運賃：約${req.pharmacy.fareEstimate.toLocaleString()}円
+          乗車場所：${req.pharmacy.name}／行先：${req.pharmacy.destinationArea}／距離：約${req.pharmacy.rideDistanceKm}km／予測運賃：約${req.pharmacy.fareEstimate.toLocaleString()}円
         </div>
         ${finished ? `
           <button onclick="removeRequest('${req.id}')"
