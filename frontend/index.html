@@ -138,12 +138,13 @@ const COLOR_THEMES = [
  */
 const PHARMACY_PRESETS = [
   {
-    name: '〇〇調剤薬局',
-    location: { lat: 33.5790, lng: 130.2615 }, // 九大学研都市駅すぐそば
-    destinationArea: '西区元岡エリア',
-    destinationCenter: { lat: 33.59695, lng: 130.22369 }, // 九州大学伊都キャンパス（元岡エリアの代表点）
-    fareEstimate: 2800,      // フォールバック値（Directions取得完了まで／失敗時に使用）
-    minutesToPharmacy: 4,    // フォールバック値
+    // 実店舗：リライ薬局 学研都市店（福岡県福岡市西区北原1丁目13-3、九大学研都市駅から徒歩5分）
+    name: 'リライ薬局',
+    location: { lat: 33.580326, lng: 130.258111 },
+    destinationArea: '西区田尻エリア',
+    destinationCenter: { lat: 33.57852, lng: 130.24718 }, // 田尻エリアの代表点
+    fareEstimate: 900,       // フォールバック値（Directions取得完了まで／失敗時に使用）
+    minutesToPharmacy: 2,    // フォールバック値
     routeGeometry: null,     // Directionsのルート形状（取得後に設定）
   },
   {
@@ -226,12 +227,19 @@ const state = {
 // 操作関数
 // ------------------------------------------------------------
 
-/** 高齢者の来店・受付（レセコン連携）を模擬する（デモ操作パネルから呼ばれる）。薬局はランダムに選ばれる */
+/**
+ * 高齢者の来店・受付（レセコン連携）を模擬する（デモ操作パネルから呼ばれる）。
+ * 最初の1件は必ず「リライ薬局→西区田尻エリア」になるようにし、デモの冒頭で
+ * 説明しやすい実在の店舗名・地名を確実に見せる。2件目以降はランダムに選ぶ。
+ */
 function createRequest() {
   const activeCount = state.requests.filter(r => r.status === 'REQUESTED' || r.status === 'ACCEPTED').length;
   if (activeCount >= MAX_ACTIVE_REQUESTS) return;
 
-  const pharmacy = PHARMACY_PRESETS[Math.floor(Math.random() * PHARMACY_PRESETS.length)];
+  const isFirstRequest = state.requestCounter === 0;
+  const pharmacy = isFirstRequest
+    ? PHARMACY_PRESETS[0]
+    : PHARMACY_PRESETS[Math.floor(Math.random() * PHARMACY_PRESETS.length)];
   state.requestCounter += 1;
   const req = {
     id: `req-${Date.now()}-${state.requestCounter}`,
@@ -239,14 +247,11 @@ function createRequest() {
     // 同じ薬局からでも、リクエストが来るたびに順番に色を割り当てるので必ず見分けがつく
     color: COLOR_THEMES[(state.requestCounter - 1) % COLOR_THEMES.length],
     pharmacy,
-    status: 'REQUESTED', // REQUESTED -> ACCEPTED -> (locked/arrived/dispensingDoneが進行) / DECLINED / CANCELLED
+    status: 'REQUESTED', // REQUESTED -> ACCEPTED -> (locked/arrivedが進行) / DECLINED / CANCELLED
     countdown: TOTAL_MINUTES,
     minutesSinceAccept: 0,
     locked: false,
     arrived: false,
-    dispensingDone: false,
-    dispensingTargetMinute: null,
-    dispensingEstimateMinutes: null,
     timerId: null,
     transientTimerId: null,
     collapsed: false, // trueの間は「待ち時間だけ」の1行表示に折りたたむ
@@ -284,11 +289,6 @@ function acceptRequest(id) {
   req.minutesSinceAccept = 0;
   req.locked = false;
   req.arrived = false;
-  req.dispensingDone = false;
-  // 調剤完了のタイミングは会計・調剤の混み具合で毎回変動する（内部の真の完了予定・タクシー側には非公開）。
-  // 到着予定（経過30分）より早いことが多いが、遅れて到着後に完了することもある。
-  req.dispensingTargetMinute = 8 + Math.floor(Math.random() * 26); // 経過8〜33分のどこかでランダムに完了
-  req.dispensingEstimateMinutes = req.dispensingTargetMinute;
   startRequestCountdown(req);
   render();
 }
@@ -329,28 +329,6 @@ function removeRequest(id) {
   render();
 }
 
-/** 現在の調剤進行度（0〜100%）。タクシー側の画面には「進み具合」だけを見せ、完了予定時刻そのものは見せない */
-function getDispensingProgressPercent(req) {
-  if (req.dispensingDone) return 100;
-  if (!req.dispensingTargetMinute) return 0;
-  return Math.max(0, Math.min(100, Math.round((req.minutesSinceAccept / req.dispensingTargetMinute) * 100)));
-}
-
-/**
- * タクシー側に見せる「完了予測時間」を更新する。
- * 内部の真の残り時間そのものではなく、そこに毎回ブレ（±3分）を乗せた目安値にする。
- * → 調剤の進み具合次第で、予測が早まったり遅れたりして前後する見た目を再現する。
- */
-function updateDispensingEstimate(req) {
-  const trueRemaining = Math.max(req.dispensingTargetMinute - req.minutesSinceAccept, 0);
-  if (trueRemaining <= 0) {
-    req.dispensingEstimateMinutes = 0;
-    return;
-  }
-  const jitter = Math.floor(Math.random() * 7) - 3; // -3〜+3分のブレ
-  req.dispensingEstimateMinutes = Math.max(1, trueRemaining + jitter);
-}
-
 /** リクエストごとに独立したタイマーを回す（複数案件が同時に、別々のペースで進行できるようにする） */
 function startRequestCountdown(req) {
   if (req.timerId) clearInterval(req.timerId);
@@ -361,20 +339,9 @@ function startRequestCountdown(req) {
     if (!req.locked && req.minutesSinceAccept >= LOCK_AT_MINUTE) {
       req.locked = true;
     }
-    // 到着予定時刻（経過30分）に到達
+    // 到着予定時刻（経過30分）に到達したらこの案件のタイマーは終了
     if (!req.arrived && req.minutesSinceAccept >= TOTAL_MINUTES) {
       req.arrived = true;
-    }
-    // 調剤完了はランダムに決めたタイミングで、通知として初めてタクシー側に届く。
-    // 到着予定ちょうど（ゼロ）で来るとは限らず、到着後にずれ込むこともある。
-    if (!req.dispensingDone && req.minutesSinceAccept >= req.dispensingTargetMinute) {
-      req.dispensingDone = true;
-    }
-    if (!req.dispensingDone) {
-      updateDispensingEstimate(req);
-    }
-    // 到着済み・調剤完了済みの両方が揃ったらこの案件のタイマーは終了
-    if (req.arrived && req.dispensingDone) {
       clearInterval(req.timerId);
       req.timerId = null;
     }
@@ -686,7 +653,7 @@ function buildCardHTML(req) {
   }
 
   // ACCEPTED
-  const finished = req.arrived && req.dispensingDone;
+  const finished = req.arrived;
   return `
     <div class="anim-slide-in bg-white border-2 rounded-2xl shadow-2xl overflow-hidden" style="border-color:${req.color.dot}">
       ${identityStrip}
@@ -694,22 +661,6 @@ function buildCardHTML(req) {
         ${req.arrived ? '🚕 到着エリアに接近中' : req.locked ? '🔒 確定ロック中（ナビ開始）' : '✅ 事前受託 確定済み'}
       </div>
       <div class="p-4 space-y-3 text-sm">
-        <div class="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
-          <div class="flex items-center justify-between mb-1.5">
-            <p class="text-[11px] text-amber-700/70 font-bold">💊 薬局の調剤状況</p>
-            <p id="dispensing-stage-label-${req.id}" class="text-[12px] font-bold ${req.dispensingDone ? 'text-amber-700' : 'text-amber-600/70'}">
-              ${req.dispensingDone ? '調剤完了：会計待ち' : '調剤中…'}
-            </p>
-          </div>
-          <div class="w-full h-2 rounded-full bg-amber-100 overflow-hidden">
-            <div id="dispensing-progress-bar-${req.id}" class="h-full rounded-full bg-amber-500 transition-all duration-300"
-              style="width: ${getDispensingProgressPercent(req)}%;"></div>
-          </div>
-          ${!req.dispensingDone ? `
-            <p id="dispensing-eta-${req.id}" class="text-[11px] text-amber-600/70 mt-1.5">
-              完了まで あと約 <span class="font-bold">${req.dispensingEstimateMinutes}</span> 分（目安・進み具合で前後します）
-            </p>` : ''}
-        </div>
         <p class="text-[15px] font-bold text-slate-800 leading-relaxed">
           ${req.arrived
             ? '🎉 到着予定時刻になりました。乗車チケットを持ったお客様を探してください。'
@@ -748,14 +699,6 @@ function patchCardDynamicParts(cardEl, req) {
 
   const compactEl = cardEl.querySelector(`#countdown-compact-${req.id}`);
   if (compactEl) compactEl.textContent = getCompactStatusText(req);
-
-  const bar = cardEl.querySelector(`#dispensing-progress-bar-${req.id}`);
-  if (bar) bar.style.width = getDispensingProgressPercent(req) + '%';
-
-  const eta = cardEl.querySelector(`#dispensing-eta-${req.id}`);
-  if (eta) {
-    eta.innerHTML = `完了まで あと約 <span class="font-bold">${req.dispensingEstimateMinutes}</span> 分（目安・進み具合で前後します）`;
-  }
 }
 
 /**
@@ -800,7 +743,7 @@ function renderOverlayList() {
   // 距離は時間経過で変わらないため、既存カードは動かさず、新規カードだけを
   // 正しい距離順の位置に挿入する（不要な並べ替えでスライドインが再生されるのを防ぐ）。
   sortedRequests.forEach((req, index) => {
-    const signature = `${req.status}|${req.locked}|${req.arrived}|${req.dispensingDone}|${req.collapsed}`;
+    const signature = `${req.status}|${req.locked}|${req.arrived}|${req.collapsed}`;
     let cardEl = container.querySelector(`[data-req-id="${req.id}"]`);
     if (!cardEl) {
       cardEl = document.createElement('div');
