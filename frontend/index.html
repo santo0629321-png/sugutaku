@@ -65,20 +65,28 @@
   </div>
 </div>
 
-<!-- ============ メイン：車載ナビ端末（横画面・地図デフォルト） ============ -->
-<main class="max-w-6xl mx-auto px-4 py-8 flex flex-col items-center">
+<!-- ============ メイン：車載ナビ端末（sm以上は横画面デバイス風、スマホは地図＋通知を縦積み） ============ -->
+<main class="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-8 flex flex-col items-center">
 
-  <div class="relative w-full max-w-[880px] aspect-[16/10] rounded-2xl border-[10px] border-slate-900 bg-slate-900 shadow-2xl overflow-hidden">
-    <div id="taxi-map" class="absolute inset-0"></div>
-    <div id="taxi-overlay" class="absolute top-3 right-3 bottom-3 w-[280px] sm:w-[300px] overflow-y-auto flex flex-col gap-3"></div>
-    <div id="taxi-location-pill" class="absolute top-4 left-4"></div>
-    <div class="absolute bottom-2 left-4 text-white/50 text-[10px] font-mono tracking-widest">SUGUTAKU DRIVER NAVI</div>
+  <!--
+    外側ラッパー：sm未満（スマホ）では通知カードは地図の「下」に通常表示（overflow制約なし）。
+    sm以上ではこれまで通り地図に重ねた絶対配置に切り替える。
+    → 通知カードが幅280pxの狭い枠に押し込まれて操作できなくなる問題を解消する。
+  -->
+  <div class="relative w-full max-w-[880px]">
+    <div class="relative w-full aspect-[4/3] sm:aspect-[16/10] rounded-2xl border-[6px] sm:border-[10px] border-slate-900 bg-slate-900 shadow-2xl overflow-hidden">
+      <div id="taxi-map" class="absolute inset-0"></div>
+      <div id="taxi-location-pill" class="absolute top-3 left-3 sm:top-4 sm:left-4"></div>
+      <div class="absolute bottom-2 left-3 sm:left-4 text-white/50 text-[9px] sm:text-[10px] font-mono tracking-widest">SUGUTAKU DRIVER NAVI</div>
+    </div>
+    <div id="taxi-overlay"
+      class="mt-3 sm:mt-0 sm:absolute sm:top-3 sm:right-3 sm:bottom-3 sm:w-[300px] flex flex-col gap-3 sm:overflow-y-auto"></div>
   </div>
 
-  <!-- 車のダッシュボード風マウントアーム（横画面端末を運転席ホルダーに固定しているイメージ） -->
-  <div class="w-24 h-6 bg-slate-700 -mt-1 rounded-b-xl"></div>
-  <div class="w-40 h-3 bg-slate-800 rounded-full mt-1"></div>
-  <p class="mt-3 text-slate-400 text-xs font-bold">📱 運転席ホルダーに固定された車載端末（横画面）</p>
+  <!-- 車のダッシュボード風マウントアーム（横画面端末を運転席ホルダーに固定しているイメージ／スマホでは省スペースのため非表示） -->
+  <div class="hidden sm:block w-24 h-6 bg-slate-700 -mt-1 rounded-b-xl"></div>
+  <div class="hidden sm:block w-40 h-3 bg-slate-800 rounded-full mt-1"></div>
+  <p class="hidden sm:block mt-3 text-slate-400 text-xs font-bold">📱 運転席ホルダーに固定された車載端末（横画面）</p>
 </main>
 
 <!-- ============ 解説チップス（プレゼン用の小さな注記／クリックで開閉） ============ -->
